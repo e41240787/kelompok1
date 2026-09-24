@@ -15,111 +15,187 @@ document.addEventListener('DOMContentLoaded', () => {
     const mapElement = document.getElementById('map');
     if (!mapElement) return;
 
-    // Koordinat dummy awal (Jakarta Monas)
-    const dummyLat = -6.1754;
-    const dummyLng = 106.8272;
-    const dummyZoom = 13;
+    // Koordinat default awal (Jakarta Monas)
+    const defaultLat = -6.1754;
+    const defaultLng = 106.8272;
+    const defaultZoom = 13;
 
     // Inisialisasi Leaflet Map
     const map = L.map('map', {
         zoomControl: true,
         scrollWheelZoom: true,
         dragging: true,
-    }).setView([dummyLat, dummyLng], dummyZoom);
+    }).setView([defaultLat, defaultLng], defaultZoom);
 
     // OpenStreetMap Tile Layer
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
     }).addTo(map);
 
-    // Marker awal dummy
-    let currentMarker = L.marker([dummyLat, dummyLng])
-        .addTo(map)
-        .bindPopup('<b>Posisi Awal (Dummy)</b><br>Monas, Jakarta')
-        .openPopup();
+    let currentMarker = null;
 
-    // Elemen UI
+    // Elemen UI DOM
+    const btnFetchDb = document.getElementById('btn-fetch-db');
     const btnLokasi = document.getElementById('btn-lokasi-saya');
     const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
+    const badgeSource = document.getElementById('badge-source');
+
+    // Variabel Database MySQL
+    const valDeviceId = document.getElementById('val-device-id');
     const valLat = document.getElementById('val-latitude');
     const valLng = document.getElementById('val-longitude');
+    const valSpeed = document.getElementById('val-speed');
+    const valAltitude = document.getElementById('val-altitude');
+    const valSatellites = document.getElementById('val-satellites');
+    const valRecordedAt = document.getElementById('val-recorded-at');
 
-    // Handling Tombol "Lokasi Saya"
+    /**
+     * Mengubah data ke tampilan UI
+     */
+    function updateUI(data, isFromDb = true) {
+        if (!data) return;
+
+        const lat = parseFloat(data.latitude);
+        const lng = parseFloat(data.longitude);
+        const deviceId = data.device_id || 'UNKNOWN';
+        const speed = data.speed !== null && data.speed !== undefined ? data.speed : '-';
+        const altitude = data.altitude !== null && data.altitude !== undefined ? data.altitude : '-';
+        const satellites = data.satellites !== null && data.satellites !== undefined ? data.satellites : '-';
+        const recordedAt = data.recorded_at ? new Date(data.recorded_at).toLocaleString('id-ID') : new Date().toLocaleString('id-ID');
+
+        // Render ke elemen HTML
+        if (valDeviceId) valDeviceId.textContent = deviceId;
+        if (valLat) valLat.textContent = lat.toFixed(6);
+        if (valLng) valLng.textContent = lng.toFixed(6);
+        if (valSpeed) valSpeed.textContent = speed;
+        if (valAltitude) valAltitude.textContent = altitude;
+        if (valSatellites) valSatellites.textContent = satellites;
+        if (valRecordedAt) valRecordedAt.textContent = recordedAt;
+
+        if (statusText) statusText.textContent = isFromDb ? 'Terkoneksi ke Database' : 'Lokasi Browser Ditemukan';
+        if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500';
+        if (badgeSource) badgeSource.textContent = isFromDb ? 'MySQL Database' : 'Browser Sensor';
+
+        // Pindahkan Peta & Update Marker
+        map.flyTo([lat, lng], 15, { duration: 1.2 });
+
+        const popupContent = `
+            <div style="font-family: sans-serif; font-size: 12px; line-height: 1.5;">
+                <b style="color: #4f46e5;">Perangkat: ${deviceId}</b><br>
+                <b>Lat:</b> ${lat.toFixed(6)} | <b>Lng:</b> ${lng.toFixed(6)}<br>
+                <b>Kecepatan:</b> ${speed} km/h | <b>Ketinggian:</b> ${altitude} m<br>
+                <small style="color: #64748b;">Waktu: ${recordedAt}</small>
+            </div>
+        `;
+
+        if (currentMarker) {
+            currentMarker.setLatLng([lat, lng]).bindPopup(popupContent).openPopup();
+        } else {
+            currentMarker = L.marker([lat, lng]).addTo(map).bindPopup(popupContent).openPopup();
+        }
+    }
+
+    /**
+     * Ambil Data GPS Terkini dari API Backend Laravel (/api/gps/latest)
+     */
+    async function fetchLatestGpsData() {
+        try {
+            if (statusText) statusText.textContent = 'Mengambil data dari DB...';
+            if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse';
+
+            const response = await fetch('/api/gps/latest');
+            const result = await response.json();
+
+            if (response.ok && result.status === 'success' && result.data) {
+                updateUI(result.data, true);
+            } else {
+                if (statusText) statusText.textContent = 'Belum Ada Data di DB';
+                if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500';
+            }
+        } catch (error) {
+            console.error('Gagal mengambil data dari API:', error);
+            if (statusText) statusText.textContent = 'Gagal Koneksi Backend';
+            if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
+        }
+    }
+
+    /**
+     * Kirim Data GPS ke Backend API Laravel (/api/gps) untuk Disimpan ke MySQL
+     */
+    async function saveGpsToDatabase(gpsPayload) {
+        try {
+            const response = await fetch('/api/gps', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify(gpsPayload)
+            });
+
+            const result = await response.json();
+            if (response.ok && result.status === 'success') {
+                console.log('Berhasil disimpan ke database:', result.data);
+                updateUI(result.data, true);
+            }
+        } catch (err) {
+            console.error('Gagal menyimpan GPS ke database:', err);
+        }
+    }
+
+    // Event Listener Tombol "Cek Data Terbaru" (Fetch dari DB)
+    if (btnFetchDb) {
+        btnFetchDb.addEventListener('click', () => {
+            fetchLatestGpsData();
+        });
+    }
+
+    // Event Listener Tombol "GPS Browser & Simpan"
     if (btnLokasi) {
         btnLokasi.addEventListener('click', () => {
             if (!navigator.geolocation) {
-                if (statusText) statusText.textContent = 'Geolocation tidak didukung browser ini';
-                if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
+                alert('Browser Anda tidak mendukung Geolocation.');
                 return;
             }
 
-            // Update UI saat mencari sinyal lokasi
             if (statusText) statusText.textContent = 'Mencari Sinyal GPS...';
             if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse';
             btnLokasi.disabled = true;
-            btnLokasi.classList.add('opacity-75', 'cursor-not-allowed');
 
             navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const lat = position.coords.latitude;
-                    const lng = position.coords.longitude;
-                    const accuracy = Math.round(position.coords.accuracy);
+                async (position) => {
+                    const payload = {
+                        device_id: 'BROWSER-CLIENT',
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude,
+                        altitude: position.coords.altitude ? Math.round(position.coords.altitude) : 0,
+                        speed: position.coords.speed ? parseFloat((position.coords.speed * 3.6).toFixed(1)) : 0,
+                        satellites: 1,
+                        recorded_at: new Date().toISOString()
+                    };
 
-                    // Set nilai Latitude & Longitude
-                    if (valLat) valLat.textContent = lat.toFixed(6);
-                    if (valLng) valLng.textContent = lng.toFixed(6);
-
-                    // Update Status UI
-                    if (statusText) statusText.textContent = 'Lokasi Ditemukan';
-                    if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500';
-
-                    // Pindahkan Peta & Marker
-                    map.flyTo([lat, lng], 16, { duration: 1.5 });
-                    
-                    if (currentMarker) {
-                        currentMarker.setLatLng([lat, lng])
-                            .bindPopup(`<b>Lokasi Anda Saat Ini</b><br>Lat: ${lat.toFixed(5)}, Lng: ${lng.toFixed(5)}<br>Akurasi: ~${accuracy}m`)
-                            .openPopup();
-                    } else {
-                        currentMarker = L.marker([lat, lng])
-                            .addTo(map)
-                            .bindPopup(`<b>Lokasi Anda Saat Ini</b><br>Lat: ${lat.toFixed(5)}, Lng: ${lng.toFixed(5)}<br>Akurasi: ~${accuracy}m`)
-                            .openPopup();
-                    }
-
-                    // Reset Tombol
                     btnLokasi.disabled = false;
-                    btnLokasi.classList.remove('opacity-75', 'cursor-not-allowed');
+                    // Simpan koordinat browser langsung ke MySQL via Backend API
+                    await saveGpsToDatabase(payload);
                 },
                 (error) => {
-                    let errorMessage = 'Gagal Mengambil Lokasi';
-                    switch (error.code) {
-                        case error.PERMISSION_DENIED:
-                            errorMessage = 'Izin GPS Ditolak Browser';
-                            break;
-                        case error.POSITION_UNAVAILABLE:
-                            errorMessage = 'Sinyal Lokasi Tidak Tersedia';
-                            break;
-                        case error.TIMEOUT:
-                            errorMessage = 'Waktu Request GPS Habis';
-                            break;
-                    }
-
-                    if (statusText) statusText.textContent = errorMessage;
-                    if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
-
-                    // Reset Tombol
                     btnLokasi.disabled = false;
-                    btnLokasi.classList.remove('opacity-75', 'cursor-not-allowed');
+                    alert('Gagal mengambil lokasi dari browser: ' + error.message);
+                    if (statusText) statusText.textContent = 'GPS Browser Ditolak';
+                    if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
                 },
-                {
-                    enableHighAccuracy: true,
-                    timeout: 10000,
-                    maximumAge: 0
-                }
+                { enableHighAccuracy: true, timeout: 10000 }
             );
         });
     }
+
+    // Ambil data pertama kali saat halaman dimuat
+    fetchLatestGpsData();
+
+    // Auto Refresh / Polling dari database setiap 5 detik (Real-time Live Tracking)
+    setInterval(() => {
+        fetchLatestGpsData();
+    }, 5000);
 });
